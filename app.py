@@ -41,6 +41,17 @@ FOSSIL_SOURCES = {
     "Steinkohle": 4069,
     "Braunkohle": 1223,
 }
+COLORS = {
+    "Solar (MW)": "#f9d71c",        # gelb (Sonne)
+    "Wind Onshore (MW)": "#1f77b4", # blau
+    "Wind Offshore (MW)": "#17becf",# türkis
+    "Biomasse (MW)": "#2ca02c",     # grün
+    "Wasserkraft (MW)": "#1fa8a8",  # blaugrün
+    "Erdgas (MW)": "#ff7f0e",       # orange
+    "Steinkohle (MW)": "#7f7f7f",   # grau
+    "Braunkohle (MW)": "#8c564b",   # braun
+}
+COLORS_PCT = {key.replace(" (MW)", " (%)"): value for key, value in COLORS.items()}
 
 ALL_SOURCES = {**RENEWABLE_SOURCES, **FOSSIL_SOURCES}
 
@@ -69,6 +80,9 @@ for name, id in ALL_SOURCES.items():
         merged = pd.merge(merged, df, on="timestamp")
 
 merged = merged.set_index("timestamp")   # ← einmal, nach der Schleife
+merged_pct = merged.div(merged.sum(axis=1), axis=0) * 100
+merged_pct.columns = [col.replace(" (MW)", " (%)") for col in merged_pct.columns]
+
 
 renewable_cols = [f"{name} (MW)" for name in RENEWABLE_SOURCES]
 fossil_cols = [f"{name} (MW)" for name in FOSSIL_SOURCES]
@@ -81,6 +95,10 @@ fossil_now = latest[fossil_cols].sum()
 # Block 4: Share + Kachel
 share = renewable_share(renewable_now, fossil_now)
 st.metric("Anteil Erneuerbare (jetzt)", f"{share * 100:.1f} %")
-st.caption("Basis: 8 Hauptquellen, ohne Kernkraft/Sonstige")
 
-st.line_chart(merged)
+fig = px.line(merged, color_discrete_map=COLORS)
+fig.update_traces(hovertemplate="<b>%{fullData.name}</b>: %{y:.1f} MW<br>%{x|%d.%m.%Y %H:%M}<extra></extra>")
+st.plotly_chart(fig)
+fig = px.area(merged_pct, color_discrete_map=COLORS_PCT)
+fig.update_traces(hovertemplate="<b>%{fullData.name}</b>: %{y:.1f} %<br>%{x|%d.%m.%Y %H:%M}<extra></extra>")
+st.plotly_chart(fig)

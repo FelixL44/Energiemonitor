@@ -41,6 +41,9 @@ FOSSIL_SOURCES = {
     "Steinkohle": 4069,
     "Braunkohle": 1223,
 }
+NUCLEAR_SOURCES = {
+    "Kernenergie": 1224,
+}
 
 def sum_sources(source_dict):
     total = 0
