@@ -3,7 +3,7 @@ import requests
 import pandas as pd
 import plotly.express as px
 
-st.title("German Energy Monitor ⚡")
+st.title("Energy Monitor ⚡")
 
 @st.cache_data(ttl=3600) # Cache für 1 Stunde, damit wir nicht bei jedem Refresh die API bombardieren
 def fetch_series(filter_id):
@@ -114,6 +114,8 @@ last_update = merged.index[-1]
 
 renewable_cols = [f"{name} (MW)" for name in RENEWABLE_SOURCES]
 fossil_cols = [f"{name} (MW)" for name in FOSSIL_SOURCES]
+labels={"timestamp": "Zeit", "value": "Erzeugung (MWh)", "variable": "Energiequelle"}
+title="Stromerzeugung nach Quelle"
 
 # Block 3: letzte Zeile + Summen
 latest = merged.iloc[-1]
@@ -127,9 +129,21 @@ share = renewable_share(renewable_total, fossil_total)
 st.metric("Anteil Erneuerbare (Zeitraum)", f"{share * 100:.1f} %")
 
 
-fig = px.line(merged_resampled, color_discrete_map=COLORS)
+fig = px.line(
+    merged_resampled,
+    color_discrete_map=COLORS,
+    labels={"timestamp": "Zeit", "value": "Erzeugung (MWh)", "variable": "Energiequelle"},
+    title="Stromerzeugung nach Quelle",
+)
 fig.update_traces(hovertemplate="<b>%{fullData.name}</b>: %{y:.1f} MW<br>%{x|%d.%m.%Y %H:%M}<extra></extra>")
 st.plotly_chart(fig)
-fig = px.area(merged_pct, color_discrete_map=COLORS_PCT)
+
+
+fig = px.area(
+    merged_pct,
+    color_discrete_map=COLORS_PCT,
+    labels={"timestamp": "Zeit", "value": "Anteil (%)", "variable": "Energiequelle"},
+    title="Anteil am Strommix",
+)
 fig.update_traces(hovertemplate="<b>%{fullData.name}</b>: %{y:.1f} %<br>%{x|%d.%m.%Y %H:%M}<extra></extra>")
 st.plotly_chart(fig)
