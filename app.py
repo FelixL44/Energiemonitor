@@ -12,15 +12,25 @@ def fetch_series(filter_id):
 
     # --- Call 1: INDEX ---
     index_url = f"https://www.smard.de/app/chart_data/{filter_id}/{region}/index_{resolution}.json"
-    index_response = requests.get(index_url)
-    index_data = index_response.json()
-    last_ts = index_data['timestamps'][-4:]
+    try:
+        index_response = requests.get(index_url, timeout=10)
+        index_response.raise_for_status()
+        index_data = index_response.json()
+    except (requests.RequestException, ValueError) as e:
+        st.error(f"Konnte Index-Daten für Filter {filter_id} nicht laden: {e}")
+        st.stop()
+    last_ts = index_data['timestamps'][-4:]  # nur die letzten 4 Wochen-Blöcke -> begrenzt Zeitraum-Slider auf ~4 Wochen
 
     frames = []                                        # leere Sammelliste
     for ts in last_ts:                         # über jeden Timestamp einzeln
         data_url = f"https://www.smard.de/app/chart_data/{filter_id}/{region}/{filter_id}_{region}_{resolution}_{ts}.json"
-        data_response = requests.get(data_url)
-        series_data = data_response.json()
+        try:
+            data_response = requests.get(data_url, timeout=10)
+            data_response.raise_for_status()
+            series_data = data_response.json()
+        except (requests.RequestException, ValueError) as e:
+            st.error(f"Konnte Daten für Filter {filter_id} (Zeitstempel {ts}) nicht laden: {e}")
+            st.stop()
         df_part = pd.DataFrame(series_data["series"], columns=["timestamp", "value"]).dropna()
         frames.append(df_part)                         # diesen Wochen-Teil sammeln
 
@@ -66,15 +76,6 @@ GRANULARITY = {
 choice = st.radio("Granularität", list(GRANULARITY.keys()), horizontal=True)
 freq = GRANULARITY[choice]
 
-def sum_sources(source_dict):
-    total = 0
-    for source, id in source_dict.items():
-        df = fetch_series(id)
-        latest_value = df["value"].dropna().iloc[-1]
-        print(f"{source} latest value:", latest_value)
-        total += latest_value
-    return total
-
 def renewable_share(renewable_total, fossil_total):
     total = renewable_total + fossil_total
     if total == 0:
@@ -82,13 +83,13 @@ def renewable_share(renewable_total, fossil_total):
     return renewable_total / total
 
 merged = None
-for name, id in ALL_SOURCES.items():
-    df = fetch_series(id)
+for name, source_id in ALL_SOURCES.items():
+    df = fetch_series(source_id)
     df = df.rename(columns={"value": f"{name} (MW)"})
     if merged is None:
         merged = df
     else:
-        merged = pd.merge(merged, df, on="timestamp")
+        merged = pd.merge(merged, df, on="timestamp", how="outer")
 
 
 
@@ -117,8 +118,7 @@ fossil_cols = [f"{name} (MW)" for name in FOSSIL_SOURCES]
 labels={"timestamp": "Zeit", "value": "Erzeugung (MWh)", "variable": "Energiequelle"}
 title="Stromerzeugung nach Quelle"
 
-# Block 3: letzte Zeile + Summen
-latest = merged.iloc[-1]
+# Block 3: Summen
 renewable_total = merged[renewable_cols].sum().sum()
 fossil_total = merged[fossil_cols].sum().sum()
 
