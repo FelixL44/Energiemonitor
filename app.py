@@ -99,18 +99,21 @@ merged = merged.set_index("timestamp")
 verbrauch = verbrauch.set_index("timestamp")
 
 
-# --- Zeitraum-Slider: ZUERST filtern ---
-min_date = merged.index.min()
-max_date = merged.index.max()
-date_range = st.slider(
+# --- Zeitraum-Kalender: ZUERST filtern ---
+min_date = merged.index.min().date()
+max_date = merged.index.max().date()
+date_range = st.date_input(
     "Zeitraum",
-    min_value=min_date.to_pydatetime(),
-    max_value=max_date.to_pydatetime(),
-    value=(min_date.to_pydatetime(), max_date.to_pydatetime()),
+    value=(min_date, max_date),
+    min_value=min_date,
+    max_value=max_date,
 )
-mask = (merged.index >= date_range[0]) & (merged.index <= date_range[1])
-merged = merged[mask]
-verbrauch = verbrauch.loc[date_range[0]:date_range[1]]
+if len(date_range) == 2:
+    start = pd.Timestamp(date_range[0]).tz_localize("Europe/Berlin")
+    end = pd.Timestamp(date_range[1]).tz_localize("Europe/Berlin")
+    mask = (merged.index >= start) & (merged.index <= end)
+    merged = merged[mask]
+    verbrauch = verbrauch.loc[start:end]
 
 merged_resampled = merged.resample(freq).sum()
 verbrauch_resampled = verbrauch.resample(freq).sum().rename(columns={"value": "Verbrauch (MW)"})
