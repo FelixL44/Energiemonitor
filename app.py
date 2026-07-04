@@ -2,6 +2,7 @@ import streamlit as st
 import requests
 import pandas as pd
 import plotly.express as px
+from datetime import timedelta
 
 st.set_page_config(layout="wide", page_title="Energy Monitor")
 
@@ -101,13 +102,14 @@ last_update = merged.index[-1]
 
 min_date = merged.index.min().date()
 max_date = merged.index.max().date()
+default_start = max(max_date - timedelta(days=7), min_date)
 
 with st.sidebar:
     st.header("Filter")
     choice = st.radio("Granularität", list(GRANULARITY.keys()))
     date_range = st.date_input(
         "Zeitraum",
-        value=(min_date, max_date),
+        value=(default_start, max_date),
         min_value=min_date,
         max_value=max_date,
     )
