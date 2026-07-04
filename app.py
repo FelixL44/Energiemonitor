@@ -111,6 +111,7 @@ with st.sidebar:
         min_value=min_date,
         max_value=max_date,
     )
+    ansicht = st.radio("Ansicht", ["Prozent", "Absolut"])
 
 freq = GRANULARITY[choice]
 
@@ -175,11 +176,24 @@ fig.update_traces(hovertemplate="<b>%{fullData.name}</b>: %{y:.1f} MW<br>%{x|%d.
 st.plotly_chart(fig)
 
 
+if ansicht == "Prozent":
+    data = merged_pct
+    farben = COLORS_PCT
+    y_label = "Anteil (%)"
+    einheit = "%"
+    titel = "Anteil am Strommix"
+else:
+    data = merged_resampled
+    farben = COLORS
+    y_label = "Erzeugung (MWh)"
+    einheit = "MWh"
+    titel = "Stromerzeugung (gestapelt)"
+
 fig = px.area(
-    merged_pct,
-    color_discrete_map=COLORS_PCT,
-    labels={"timestamp": "Zeit", "value": "Anteil (%)", "variable": "Energiequelle"},
-    title="Anteil am Strommix",
+    data,
+    color_discrete_map=farben,
+    labels={"timestamp": "Zeit", "value": y_label, "variable": "Energiequelle"},
+    title=titel,
 )
-fig.update_traces(hovertemplate="<b>%{fullData.name}</b>: %{y:.1f} %<br>%{x|%d.%m.%Y %H:%M}<extra></extra>")
+fig.update_traces(hovertemplate=f"<b>%{{fullData.name}}</b>: %{{y:.1f}} {einheit}<br>%{{x|%d.%m.%Y %H:%M}}<extra></extra>")
 st.plotly_chart(fig)
