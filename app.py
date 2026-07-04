@@ -41,6 +41,7 @@ def fetch_series(filter_id):
     )
     return df
 
+
 RENEWABLE_SOURCES = {
     "Solar": 4068,
     "Wind Onshore": 4067,
@@ -63,6 +64,7 @@ COLORS = {
     "Erdgas (MW)": "#ff7f0e",       # orange
     "Steinkohle (MW)": "#7f7f7f",   # grau
     "Braunkohle (MW)": "#8c564b",   # braun
+    "Verbrauch (MW)": "#d62728",    # rot
 }
 COLORS_PCT = {key.replace(" (MW)", " (%)"): value for key, value in COLORS.items()}
 
@@ -89,11 +91,13 @@ for name, source_id in ALL_SOURCES.items():
     if merged is None:
         merged = df
     else:
-        merged = pd.merge(merged, df, on="timestamp", how="outer")
+        merged = pd.merge(merged, df, on="timestamp")
 
+verbrauch = fetch_series(410)
 
+merged = merged.set_index("timestamp")
+verbrauch = verbrauch.set_index("timestamp")
 
-merged = merged.set_index("timestamp")   # ← einmal, nach der Schleife
 
 # --- Zeitraum-Slider: ZUERST filtern ---
 min_date = merged.index.min()
@@ -106,8 +110,11 @@ date_range = st.slider(
 )
 mask = (merged.index >= date_range[0]) & (merged.index <= date_range[1])
 merged = merged[mask]
+verbrauch = verbrauch.loc[date_range[0]:date_range[1]]
 
 merged_resampled = merged.resample(freq).sum()
+verbrauch_resampled = verbrauch.resample(freq).sum().rename(columns={"value": "Verbrauch (MW)"})
+merged_mw = merged_resampled.join(verbrauch_resampled)
 merged_pct = merged_resampled.div(merged_resampled.sum(axis=1), axis=0) * 100
 merged_pct.columns = [col.replace(" (MW)", " (%)") for col in merged_pct.columns]
 
@@ -118,11 +125,19 @@ fossil_cols = [f"{name} (MW)" for name in FOSSIL_SOURCES]
 labels={"timestamp": "Zeit", "value": "Erzeugung (MWh)", "variable": "Energiequelle"}
 title="Stromerzeugung nach Quelle"
 
+
 # Block 3: Summen
 renewable_total = merged[renewable_cols].sum().sum()
 fossil_total = merged[fossil_cols].sum().sum()
 
 st.caption(f"Datenstand: {last_update.strftime('%d.%m.%Y %H:%M')} Uhr")
+
+verbrauch_total = verbrauch.sum().sum()
+deckungsgrad = renewable_total / verbrauch_total
+deckungsgrad = min(deckungsgrad, 1.0)   # bei 100% kappen
+# st.metric("Deckungsgrad", f"{deckungsgrad * 100:.1f} %")
+st.progress(deckungsgrad, text=f"Deckungsgrad: {deckungsgrad * 100:.1f} %")
+
 
 # Block 4: Share + Kachel
 share = renewable_share(renewable_total, fossil_total)
