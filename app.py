@@ -3,6 +3,8 @@ import requests
 import pandas as pd
 import plotly.express as px
 
+st.set_page_config(layout="wide", page_title="Energy Monitor")
+
 st.title("Energy Monitor ⚡")
 
 @st.cache_data(ttl=3600) # Cache für 1 Stunde, damit wir nicht bei jedem Refresh die API bombardieren
@@ -64,7 +66,6 @@ COLORS = {
     "Erdgas (MW)": "#ff7f0e",       # orange
     "Steinkohle (MW)": "#7f7f7f",   # grau
     "Braunkohle (MW)": "#8c564b",   # braun
-    "Verbrauch (MW)": "#d62728",    # rot
 }
 COLORS_PCT = {key.replace(" (MW)", " (%)"): value for key, value in COLORS.items()}
 
@@ -75,8 +76,6 @@ GRANULARITY = {
     "Tag": "D",
     "Woche": "W",
 }
-choice = st.radio("Granularität", list(GRANULARITY.keys()), horizontal=True)
-freq = GRANULARITY[choice]
 
 def renewable_share(renewable_total, fossil_total):
     total = renewable_total + fossil_total
@@ -98,17 +97,24 @@ verbrauch = fetch_series(410)
 merged = merged.set_index("timestamp")
 verbrauch = verbrauch.set_index("timestamp")
 
+last_update = merged.index[-1]
 
-# --- Zeitraum-Kalender: ZUERST filtern ---
 min_date = merged.index.min().date()
 max_date = merged.index.max().date()
-date_range = st.date_input(
-    "Zeitraum",
-    value=(min_date, max_date),
-    min_value=min_date,
-    max_value=max_date,
-)
-if len(date_range) == 2:
+
+with st.sidebar:
+    st.header("Filter")
+    choice = st.radio("Granularität", list(GRANULARITY.keys()))
+    date_range = st.date_input(
+        "Zeitraum",
+        value=(min_date, max_date),
+        min_value=min_date,
+        max_value=max_date,
+    )
+
+freq = GRANULARITY[choice]
+
+if isinstance(date_range, tuple) and len(date_range) == 2:
     start = pd.Timestamp(date_range[0]).tz_localize("Europe/Berlin")
     end = pd.Timestamp(date_range[1]).tz_localize("Europe/Berlin")
     mask = (merged.index >= start) & (merged.index <= end)
@@ -116,35 +122,47 @@ if len(date_range) == 2:
     verbrauch = verbrauch.loc[start:end]
 
 merged_resampled = merged.resample(freq).sum()
-verbrauch_resampled = verbrauch.resample(freq).sum().rename(columns={"value": "Verbrauch (MW)"})
-merged_mw = merged_resampled.join(verbrauch_resampled)
 merged_pct = merged_resampled.div(merged_resampled.sum(axis=1), axis=0) * 100
 merged_pct.columns = [col.replace(" (MW)", " (%)") for col in merged_pct.columns]
 
-last_update = merged.index[-1]
-
 renewable_cols = [f"{name} (MW)" for name in RENEWABLE_SOURCES]
 fossil_cols = [f"{name} (MW)" for name in FOSSIL_SOURCES]
-labels={"timestamp": "Zeit", "value": "Erzeugung (MWh)", "variable": "Energiequelle"}
-title="Stromerzeugung nach Quelle"
 
-
-# Block 3: Summen
 renewable_total = merged[renewable_cols].sum().sum()
 fossil_total = merged[fossil_cols].sum().sum()
+gesamt = renewable_total + fossil_total
+
+solar_anteil = merged["Solar (MW)"].sum() / gesamt if gesamt else 0
+wind_anteil = (
+    merged["Wind Onshore (MW)"].sum() + merged["Wind Offshore (MW)"].sum()
+) / gesamt if gesamt else 0
+
+renewable_pro_stunde = merged[renewable_cols].sum(axis=1)
+renewable_pro_stunde, verbrauch_pro_stunde = renewable_pro_stunde.align(
+    verbrauch["value"], join="inner"
+)
+ueberschuss_anteil = (renewable_pro_stunde > verbrauch_pro_stunde).mean()
+
+verbrauch_total = verbrauch["value"].sum()
+deckungsgrad = min(renewable_total / verbrauch_total, 1.0) if verbrauch_total else 0
+share = renewable_share(renewable_total, fossil_total)
 
 st.caption(f"Datenstand: {last_update.strftime('%d.%m.%Y %H:%M')} Uhr")
 
-verbrauch_total = verbrauch.sum().sum()
-deckungsgrad = renewable_total / verbrauch_total
-deckungsgrad = min(deckungsgrad, 1.0)   # bei 100% kappen
-# st.metric("Deckungsgrad", f"{deckungsgrad * 100:.1f} %")
-st.progress(deckungsgrad, text=f"Deckungsgrad: {deckungsgrad * 100:.1f} %")
+col1, col2, col3, col4 = st.columns(4)
+with col1:
+    st.metric("Deckungsgrad", f"{deckungsgrad * 100:.1f} %")
+with col2:
+    st.metric("Anteil Erneuerbare", f"{share * 100:.1f} %")
+with col3:
+    st.metric("Solar-Anteil", f"{solar_anteil * 100:.1f} %")
+with col4:
+    st.metric("Wind-Anteil", f"{wind_anteil * 100:.1f} %")
 
+col5, = st.columns(1)
+with col5:
+    st.metric("Überschuss-Stunden", f"{ueberschuss_anteil * 100:.1f} %")
 
-# Block 4: Share + Kachel
-share = renewable_share(renewable_total, fossil_total)
-st.metric("Anteil Erneuerbare (Zeitraum)", f"{share * 100:.1f} %")
 
 
 fig = px.line(
