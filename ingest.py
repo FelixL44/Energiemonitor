@@ -4,6 +4,7 @@ import psycopg
 from psycopg.types.json import Json
 from dotenv import load_dotenv
 import time
+import sys
 
 load_dotenv()
 CONN_STRING = os.environ["SUPABASE_DB_URL"]
@@ -57,13 +58,8 @@ def fetch_and_store_block(
         """,
     (filter_id, REGION, RESOLUTION, block_timestamp, Json(payload), data_url),
 )
-
-
-if __name__ == "__main__":
-    NUM_BLOCKS = 26  # Backfill: letzte 26 Wochen. Cron später: 2.
-    print("Backfill startet, öffne Verbindung...")
-    # Orchestrator: Verbindung EINMAL öffnen, an jeden Worker-Call übergeben.
-
+        
+def run_ingestion(num_blocks: int) -> None:
     with psycopg.connect(CONN_STRING, prepare_threshold=None) as conn:
         for filter_id in FILTER_IDS:
             # 1. Index-Call: volle Blockliste für diesen Filter holen.
@@ -74,7 +70,7 @@ if __name__ == "__main__":
                 continue
 
             # 2. Zuschneiden: nur die letzten NUM_BLOCKS aus der Liste.
-            timestamps = timestamps[-NUM_BLOCKS:]
+            timestamps = timestamps[-num_blocks:]
 
             # 3. Info-Print: welcher Filter, wie viele Blöcke.
             print(f"Filter: {filter_id} | Blöcke: {len(timestamps)}")
@@ -87,4 +83,13 @@ if __name__ == "__main__":
                     print(f"Fehler im Worker: {e} | {filter_id} | {block_timestamp}")
                 time.sleep(0.2)
 
-    print("Backfill fertig.")
+if __name__ == "__main__":
+    NUM_BLOCKS =  int(sys.argv[1]) if len(sys.argv) > 1 else 2
+
+    print("Run startet, öffne Verbindung...")
+    # Orchestrator: Verbindung EINMAL öffnen, an jeden Worker-Call übergeben.
+    run_ingestion(NUM_BLOCKS)
+
+
+print(f"Run startet mit {NUM_BLOCKS} Blöcken...") 
+
