@@ -1,0 +1,33 @@
+name: SMARD Ingestion
+
+on:
+  # Trigger 1: automatisch nach Zeitplan (der tägliche Lauf)
+  schedule:
+    - cron: "0 5 * * *"   # täglich um 05:00 UTC
+  # Trigger 2: manueller Knopf in der GitHub-UI (für Backfill / Ad-hoc)
+  workflow_dispatch:
+    inputs:
+      num_blocks:
+        description: "Wie viele Wochen-Blöcke pro Filter"
+        required: false
+        default: "2"
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Code auschecken
+        uses: actions/checkout@v4
+
+      - name: Python einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Dependencies installieren
+        run: pip install -r requirements-ingest.txt
+
+      - name: Ingestion ausführen
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: python ingest.py ${{ github.event.inputs.num_blocks || 2 }}
