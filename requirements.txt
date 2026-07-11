@@ -1,4 +1,3 @@
-streamlit
-pandas
 requests
-plotly
+psycopg[binary]
+python-dotenv
