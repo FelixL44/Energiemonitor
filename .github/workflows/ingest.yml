@@ -1,10 +1,8 @@
 name: SMARD Ingestion
 
 on:
-  # Trigger 1: automatisch nach Zeitplan (der tägliche Lauf)
   schedule:
-    - cron: "0 5 * * *"   # täglich um 05:00 UTC
-  # Trigger 2: manueller Knopf in der GitHub-UI (für Backfill / Ad-hoc)
+    - cron: "40 6 * * *"
   workflow_dispatch:
     inputs:
       num_blocks:
