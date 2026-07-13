@@ -2,7 +2,7 @@ name: SMARD Ingestion
 
 on:
   schedule:
-    - cron: "23 5 * * *"
+    - cron: "17 6 * * *"
   workflow_dispatch:
     inputs:
       num_blocks:
