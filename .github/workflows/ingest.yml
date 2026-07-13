@@ -2,6 +2,7 @@ name: SMARD Ingestion
 
 on:
   schedule:
+    # resync schedule 2026
     - cron: "17 6 * * *"
   workflow_dispatch:
     inputs:
