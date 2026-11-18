@@ -7,7 +7,7 @@ import requests
 import streamlit as st
 from streamlit.testing.v1 import AppTest
 
-from ansichten import hourly_flows, hours
+from ansichten import arrow_width, flow_map, hourly_flows, hours
 from stromdaten import PRICE, bounds, load_series, spec
 
 DAY = date(2026, 10, 25)
@@ -65,6 +65,10 @@ class StromtagTest(unittest.TestCase):
         self.assertFalse(list(app.exception))
         app.toggle[0].set_value(True).run()
         self.assertFalse(list(app.exception))
+        app.select_slider[0].set_value(7).run()
+        self.assertEqual(app.select_slider[0].value, 7)
+        app.radio[1].set_value(3).run()
+        self.assertEqual(app.select_slider[0].value, 7)
         app.toggle[0].set_value(False).run()
         app.radio[0].set_value("Historische Auswertung").run()
         self.assertFalse(list(app.exception))
@@ -79,7 +83,10 @@ class StromtagTest(unittest.TestCase):
     def test_offline(self, *_):
         app = AppTest.from_file("app.py", default_timeout=60).run()
         self.assertFalse(list(app.exception))
-        self.assertEqual(app.metric[0].value, "—")
+        self.assertFalse(app.metric)
+        calls = _[0].call_count
+        app.button[0].click().run()
+        self.assertGreater(_[0].call_count, calls)
         self.assertTrue(app.warning)
 
     @patch.dict("os.environ", {"SUPABASE_DB_URL": "test"})
@@ -90,6 +97,25 @@ class StromtagTest(unittest.TestCase):
         _, values, issues = load_series(("Netzlast", 410), 0, 7200000)
         self.assertEqual(values, {0: 1, 3600000: 2})
         self.assertFalse(issues)
+
+    def test_arrow_magnitude_direction_and_hover(self):
+        t = hours(DAY)[2]
+        row = pd.Series({"FR": 3.2505, "NL": -0.4, "BE": 0.0}, name=t)
+        fig = flow_map(row)
+        arrows = {tr.name: tr for tr in fig.data if tr.mode == "lines+markers"}
+        self.assertEqual(set(arrows), {"Frankreich", "Niederlande"})
+        strong, weak = arrows["Frankreich"], arrows["Niederlande"]
+        self.assertGreater(strong.line.width, weak.line.width)
+        self.assertEqual(weak.line.width, arrow_width(0.4))
+        self.assertGreater(strong.x[-1], strong.x[0])  # France to Germany
+        self.assertLess(weak.x[-1], weak.x[0])  # Germany to Netherlands
+        self.assertEqual(
+            strong.customdata[20][1:3],
+            ["Frankreich → Deutschland", "3 250,5 MW im Stundenmittel"],
+        )
+        self.assertIn("02:00 CEST–02:00 CET", strong.customdata[20][3])
+        self.assertIn("customdata[2]", strong.hovertemplate)
+        self.assertEqual(strong.marker.symbol[-1], "arrow")
 
     def test_prices_spec(self):
         self.assertEqual(spec(4169), ("DE-LU", "quarterhour"))

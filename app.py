@@ -1,11 +1,20 @@
 from datetime import date, timedelta
+from time import monotonic
 
 import pandas as pd
 import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-from ansichten import LAND, flow_map, frame, hourly_flows, hours, plot_series
+from ansichten import (
+    LAND,
+    border_reading,
+    flow_map,
+    frame,
+    hourly_flows,
+    hours,
+    plot_series,
+)
 from stromdaten import (
     BERLIN,
     GENERATION,
@@ -55,6 +64,10 @@ def show_warnings(warnings):
                 st.write(message)
 
 
+def reset_clock():
+    st.session_state["next-hour-at"] = monotonic() + 2
+
+
 def prices(day, prices, selected):
     st.subheader("Wann ist Strom an der Börse günstig?")
     st.caption(
@@ -69,7 +82,12 @@ def prices(day, prices, selected):
         st.info("Für diesen Tag liegen keine Viertelstundenpreise vor.")
         return
     duration = st.radio(
-        "Dauer", [1, 2, 3, 4], index=1, horizontal=True, format_func=lambda n: f"{n} h"
+        "Dauer",
+        [1, 2, 3, 4],
+        index=1,
+        horizontal=True,
+        format_func=lambda n: f"{n} h",
+        on_change=reset_clock,
     )
     eligible = s.loc[s.index >= pd.Timestamp.now(tz=BERLIN)] if day == TODAY else s
     costs = eligible.rolling(4 * duration, min_periods=4 * duration).mean().dropna()
@@ -159,21 +177,34 @@ def day_view():
         st.warning(
             "Für diesen Tag gibt es noch keine gemeinsame Messstunde für Netzlast, Wind und Solar."
         )
-    show_warnings(issues + ([problem] if problem else []))
-    play = st.toggle("Tag abspielen", key=f"play-{day}")
+    warnings = issues + ([problem] if problem else [])
+    show_warnings(warnings)
+    if warnings:
+
+        def retry():
+            data.clear(day, day, tuple(SERIES))
+            flows.clear(day)
+
+        st.button("Daten erneut laden", on_click=retry)
+    if raw.dropna(how="all").empty and borders.dropna(how="all").empty:
+        st.info("Für den gewählten Tag sind keine Daten verfügbar.")
+        return
+    play = st.toggle("Tag abspielen", key=f"play-{day}", on_change=reset_clock)
 
     @st.fragment(run_every=2 if play else None)
     def timeline():
         key = f"hour-{day}"
         if key not in st.session_state:
             st.session_state[key] = initial
-        if play:
+        if play and monotonic() >= st.session_state.get("next-hour-at", 0):
+            reset_clock()
             st.session_state[key] = (st.session_state[key] + 1) % len(ticks)
         pos = st.select_slider(
             "Messstunde",
             options=list(range(len(ticks))),
             format_func=lambda i: ticks[i].strftime("%H:%M %Z"),
             key=key,
+            on_change=reset_clock,
         )
         t = ticks[pos]
         m = s.loc[t]
@@ -215,13 +246,13 @@ def day_view():
         with map_col:
             st.subheader("Strom über die Grenzen")
             st.caption(
-                "Grün → Deutschland · Gelb → Nachbarland · Land für den Tagesverlauf auswählen"
+                "Grün: Import · Gelb: Export · Breitere Pfeile zeigen mehr Leistung."
             )
             event = st.plotly_chart(
                 flow_map(border),
                 use_container_width=True,
                 key="border-map",
-                on_select="rerun",
+                on_select=reset_clock,
                 selection_mode="points",
                 config={"displayModeBar": False},
             )
@@ -242,7 +273,12 @@ def day_view():
                 available,
                 format_func=lambda c: labels.get(c, c),
                 key="border-choice",
+                on_change=reset_clock,
             )
+            route, reading, interval = border_reading(
+                labels.get(country, country), border.get(country), t
+            )
+            st.caption(f"{route} · {reading} · {interval}")
             st.plotly_chart(
                 plot_series({labels.get(country, country): borders[country]}, "GW", t),
                 use_container_width=True,

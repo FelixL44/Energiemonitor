@@ -120,6 +120,29 @@ def plot_series(series, unit, selected=None):
     return fig
 
 
+def border_reading(name, value, hour):
+    interval = (
+        f"{hour:%d.%m.%Y} · {hour:%H:%M %Z}–{hour + pd.Timedelta(hours=1):%H:%M %Z}"
+    )
+    if pd.isna(value):
+        return name, "Kein Messwert", interval
+    if value == 0:
+        return name, "0 MW · ausgeglichener Fluss", interval
+    direction = f"{name} → Deutschland" if value > 0 else f"Deutschland → {name}"
+    # One GW is 1,000 MW. Preserve sub-MW differences between hourly averages.
+    mw = (
+        f"{abs(value) * 1000:,.2f}".rstrip("0")
+        .rstrip(".")
+        .translate(str.maketrans({",": " ", ".": ","}))
+    )
+    return direction, f"{mw} MW im Stundenmittel", interval
+
+
+def arrow_width(gw):
+    # Identical scale for every connection and hour, measured in screen pixels.
+    return 1.2 + 2.5 * abs(gw)
+
+
 def flow_map(row):
     fig = go.Figure()
     for name, polygons in BORDERS.items():
@@ -131,55 +154,70 @@ def flow_map(row):
                 mode="lines",
                 fill="toself",
                 hoverinfo="skip",
-                line={"width": 0.65, "color": "#475862"},
-                fillcolor="#335451" if name == "Germany" else "#24343d",
+                line={"width": 0.7, "color": "#41545d"},
+                showlegend=False,
+                fillcolor="#355751" if name == "Germany" else "#22333c",
             )
+
+    # Paths end just before the labels. Dense transparent markers make the full
+    # shaft hoverable and clickable, including thin flows on narrow screens.
+    hover = (
+        "<b>%{customdata[1]}</b><br>%{customdata[2]}<br>%{customdata[3]}<extra></extra>"
+    )
     labels = []
     for name, code, x, y in LAND.values():
-        v = row.get(code)
-        valid = pd.notna(v)
-        if valid and v != 0:
-            dx, dy = 10.45 - x, 51.15 - y
-            a, b = (0.14, 0.78) if v > 0 else (0.78, 0.14)
-            fig.add_annotation(
-                x=x + dx * b,
-                y=y + dy * b,
-                ax=x + dx * a,
-                ay=y + dy * a,
-                xref="x",
-                yref="y",
-                axref="x",
-                ayref="y",
-                showarrow=True,
-                arrowhead=3,
-                arrowsize=1.3,
-                arrowwidth=min(4, 1 + abs(v) * 0.55),
-                arrowcolor="#64d6ae" if v > 0 else "#f4be67",
-                text="",
-            )
-        labels.append(
-            (
-                x,
-                y,
-                code,
-                name,
-                "Daten fehlen"
-                if not valid
-                else f"{abs(v):.2f} GW "
-                + ("Import" if v > 0 else "Export" if v < 0 else "Saldo null"),
-            )
+        value = row.get(code)
+        details = [code, *border_reading(name, value, row.name)]
+        labels.append((x, y, code, details))
+        if pd.isna(value) or value == 0:
+            continue
+        a, b = (0.11, 0.80) if value > 0 else (0.80, 0.11)
+        pts = [a + (b - a) * i / 40 for i in range(41)]
+        color = "#64deba" if value > 0 else "#ffc368"
+        width = arrow_width(value)
+        fig.add_scatter(
+            x=[x + (10.45 - x) * f for f in pts],
+            y=[y + (51.15 - y) * f for f in pts],
+            mode="lines+markers",
+            showlegend=False,
+            name=name,
+            customdata=[details] * 41,
+            line={"width": width, "color": color, "simplify": False},
+            marker={
+                "symbol": ["circle"] * 40 + ["arrow"],
+                "angleref": "previous",
+                "size": [16] * 40 + [9 + width * 1.6],
+                "line": {"width": 0},
+                "color": ["rgba(0,0,0,0)"] * 40 + [color],
+            },
+            hovertemplate=hover,
+            selected={"marker": {"opacity": 1}},
+            unselected={"marker": {"opacity": 1}},
         )
-    xs, ys, codes, names, details = zip(*labels)
+    xs, ys, codes, details = zip(*labels)
     fig.add_scatter(
         x=xs,
         y=ys,
         mode="markers+text",
-        marker={"size": 10, "color": "#d9e5e6"},
+        showlegend=False,
+        marker={"size": 7, "color": "#d9e5e6"},
         text=codes,
         textposition="top center",
-        customdata=list(zip(codes, names, details)),
-        hovertemplate="%{customdata[1]} · %{customdata[2]}<extra></extra>",
+        textfont={"color": "#e9f2f3", "size": 12},
+        customdata=details,
+        hovertemplate=hover,
+        selected={"marker": {"opacity": 1}},
+        unselected={"marker": {"opacity": 1}},
     )
+    for gw in (1, 4):
+        fig.add_scatter(
+            x=[None],
+            y=[None],
+            mode="lines",
+            hoverinfo="skip",
+            line={"width": arrow_width(gw), "color": "#afbdc4"},
+            name=f"{gw} GW",
+        )
     fig.add_annotation(
         x=10.45,
         y=51.15,
@@ -189,12 +227,27 @@ def flow_map(row):
     )
     fig.update_layout(
         height=400,
-        margin={"l": 0, "r": 0, "t": 0, "b": 0},
-        showlegend=False,
+        margin={"l": 0, "r": 0, "t": 3, "b": 4},
         plot_bgcolor="#142229",
+        hovermode="closest",
+        hoverdistance=12,
+        hoverlabel={
+            "bgcolor": "#122128",
+            "bordercolor": "#72918d",
+            "font": {"color": "#f5faf8"},
+        },
+        legend={
+            "orientation": "h",
+            "x": 0.01,
+            "y": 0.005,
+            "bgcolor": "#142229",
+            "font": {"color": "#d9e5e6"},
+            "itemclick": False,
+            "itemdoubleclick": False,
+        },
         clickmode="event+select",
         dragmode=False,
         xaxis={"range": [1, 21], "visible": False, "fixedrange": True},
-        yaxis={"range": [45.7, 60.6], "visible": False, "fixedrange": True},
+        yaxis={"range": [45.5, 60.6], "visible": False, "fixedrange": True},
     )
     return fig
