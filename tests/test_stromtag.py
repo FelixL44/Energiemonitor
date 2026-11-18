@@ -102,11 +102,17 @@ class StromtagTest(unittest.TestCase):
         t = hours(DAY)[2]
         row = pd.Series({"FR": 3.2505, "NL": -0.4, "BE": 0.0}, name=t)
         fig = flow_map(row)
-        arrows = {tr.name: tr for tr in fig.data if tr.mode == "lines+markers"}
+        arrows = {tr.name: tr for tr in fig.data if tr.mode == "markers"}
         self.assertEqual(set(arrows), {"Frankreich", "Niederlande"})
         strong, weak = arrows["Frankreich"], arrows["Niederlande"]
-        self.assertGreater(strong.line.width, weak.line.width)
-        self.assertEqual(weak.line.width, arrow_width(0.4))
+        shafts = [a for a in fig.layout.annotations if a.showarrow]
+        self.assertEqual(len(shafts), 2)
+        self.assertEqual(shafts[0].arrowcolor, shafts[1].arrowcolor)
+        self.assertGreater(shafts[0].arrowwidth, shafts[1].arrowwidth)
+        self.assertEqual(shafts[1].arrowwidth, arrow_width(0.4))
+        for shaft, hit_area in zip(shafts, (strong, weak)):
+            self.assertAlmostEqual(shaft.ax, hit_area.x[0])
+            self.assertAlmostEqual(shaft.x, hit_area.x[-1])
         self.assertGreater(strong.x[-1], strong.x[0])  # France to Germany
         self.assertLess(weak.x[-1], weak.x[0])  # Germany to Netherlands
         self.assertEqual(
@@ -115,7 +121,6 @@ class StromtagTest(unittest.TestCase):
         )
         self.assertIn("02:00 CEST–02:00 CET", strong.customdata[20][3])
         self.assertIn("customdata[2]", strong.hovertemplate)
-        self.assertEqual(strong.marker.symbol[-1], "arrow")
 
     def test_prices_spec(self):
         self.assertEqual(spec(4169), ("DE-LU", "quarterhour"))

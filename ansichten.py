@@ -1,4 +1,5 @@
 import json
+from math import sqrt
 from pathlib import Path
 
 import pandas as pd
@@ -25,6 +26,22 @@ LAND = {
     "Poland": ("Polen", "PL", 18.4, 52.4),
     "Sweden": ("Schweden", "SE", 14.4, 57.7),
 }
+# Schematic route endpoints inside Germany, separated by frontier for legibility.
+# These coordinates do not represent individual transmission lines.
+GERMAN_ENDPOINT = {
+    "AT": (12.0, 48.5),
+    "BE": (7.65, 50.9),
+    "CH": (8.55, 48.15),
+    "CZ": (13.0, 50.5),
+    "DK": (9.9, 53.75),
+    "FR": (8.35, 49.15),
+    "LU": (7.6, 49.75),
+    "NL": (8.45, 52.35),
+    "NO": (8.1, 53.55),
+    "PL": (13.55, 52.25),
+    "SE": (12.0, 53.75),
+}
+FLOW_INK = "#c1c9d3"
 BORDERS = json.loads((Path(__file__).parent / "assets/mitteleuropa.json").read_text())
 ALIASES = {"czechia": "CZ", "czech_republic": "CZ"}
 for english, (german, code, _, _) in LAND.items():
@@ -140,7 +157,7 @@ def border_reading(name, value, hour):
 
 def arrow_width(gw):
     # Identical scale for every connection and hour, measured in screen pixels.
-    return 1.2 + 2.5 * abs(gw)
+    return 0.8 + 1.25 * sqrt(abs(gw))
 
 
 def flow_map(row):
@@ -154,9 +171,9 @@ def flow_map(row):
                 mode="lines",
                 fill="toself",
                 hoverinfo="skip",
-                line={"width": 0.7, "color": "#41545d"},
+                line={"width": 0.7, "color": "#353c46"},
                 showlegend=False,
-                fillcolor="#355751" if name == "Germany" else "#22333c",
+                fillcolor="#343d49" if name == "Germany" else "#222830",
             )
 
     # Paths end just before the labels. Dense transparent markers make the full
@@ -171,25 +188,36 @@ def flow_map(row):
         labels.append((x, y, code, details))
         if pd.isna(value) or value == 0:
             continue
-        a, b = (0.11, 0.80) if value > 0 else (0.80, 0.11)
-        pts = [a + (b - a) * i / 40 for i in range(41)]
-        color = "#64deba" if value > 0 else "#ffc368"
+        dx, dy = GERMAN_ENDPOINT[code]
+        # Keep a gap between each country label and its route in both directions.
+        foreign = (x + 0.18 * (dx - x), y + 0.18 * (dy - y))
+        origin, tip = (foreign, (dx, dy)) if value > 0 else ((dx, dy), foreign)
         width = arrow_width(value)
+        fig.add_annotation(
+            ax=origin[0],
+            ay=origin[1],
+            x=tip[0],
+            y=tip[1],
+            axref="x",
+            ayref="y",
+            xref="x",
+            yref="y",
+            text="",
+            showarrow=True,
+            arrowhead=2,
+            arrowsize=(5 + width) / (3 * width),
+            arrowwidth=width,
+            arrowcolor=FLOW_INK,
+            captureevents=False,
+        )
         fig.add_scatter(
-            x=[x + (10.45 - x) * f for f in pts],
-            y=[y + (51.15 - y) * f for f in pts],
-            mode="lines+markers",
+            x=[origin[0] + (tip[0] - origin[0]) * i / 40 for i in range(41)],
+            y=[origin[1] + (tip[1] - origin[1]) * i / 40 for i in range(41)],
+            mode="markers",
             showlegend=False,
             name=name,
             customdata=[details] * 41,
-            line={"width": width, "color": color, "simplify": False},
-            marker={
-                "symbol": ["circle"] * 40 + ["arrow"],
-                "angleref": "previous",
-                "size": [16] * 40 + [9 + width * 1.6],
-                "line": {"width": 0},
-                "color": ["rgba(0,0,0,0)"] * 40 + [color],
-            },
+            marker={"size": 16, "color": "rgba(0,0,0,0)", "line": {"width": 0}},
             hovertemplate=hover,
             selected={"marker": {"opacity": 1}},
             unselected={"marker": {"opacity": 1}},
@@ -200,10 +228,10 @@ def flow_map(row):
         y=ys,
         mode="markers+text",
         showlegend=False,
-        marker={"size": 7, "color": "#d9e5e6"},
+        marker={"size": 18, "color": "rgba(0,0,0,0)", "line": {"width": 0}},
         text=codes,
-        textposition="top center",
-        textfont={"color": "#e9f2f3", "size": 12},
+        textposition="middle center",
+        textfont={"color": "#ccd1d8", "size": 12},
         customdata=details,
         hovertemplate=hover,
         selected={"marker": {"opacity": 1}},
@@ -215,7 +243,7 @@ def flow_map(row):
             y=[None],
             mode="lines",
             hoverinfo="skip",
-            line={"width": arrow_width(gw), "color": "#afbdc4"},
+            line={"width": arrow_width(gw), "color": FLOW_INK},
             name=f"{gw} GW",
         )
     fig.add_annotation(
@@ -227,21 +255,24 @@ def flow_map(row):
     )
     fig.update_layout(
         height=400,
-        margin={"l": 0, "r": 0, "t": 3, "b": 4},
-        plot_bgcolor="#142229",
+        margin={"l": 0, "r": 0, "t": 3, "b": 28},
+        plot_bgcolor="#171c22",
+        paper_bgcolor="rgba(0,0,0,0)",
         hovermode="closest",
         hoverdistance=12,
         hoverlabel={
-            "bgcolor": "#122128",
-            "bordercolor": "#72918d",
+            "bgcolor": "#20252d",
+            "bordercolor": "#535c68",
             "font": {"color": "#f5faf8"},
         },
         legend={
             "orientation": "h",
-            "x": 0.01,
-            "y": 0.005,
-            "bgcolor": "#142229",
-            "font": {"color": "#d9e5e6"},
+            "x": 1,
+            "xanchor": "right",
+            "y": -0.015,
+            "yanchor": "top",
+            "bgcolor": "rgba(0,0,0,0)",
+            "font": {"color": "#9da5b0", "size": 11},
             "itemclick": False,
             "itemdoubleclick": False,
         },
