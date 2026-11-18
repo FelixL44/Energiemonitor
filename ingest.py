@@ -1,95 +1,81 @@
+"""Refresh recent SMARD blocks, keeping late corrections and concurrent runs safe."""
+
+import argparse
 import os
-import requests
-import psycopg
-from psycopg.types.json import Json
-from dotenv import load_dotenv
-import time
 import sys
+import time
 
-load_dotenv()
-CONN_STRING = os.environ["SUPABASE_DB_URL"]
-FILTER_IDS = [4068, 4067, 1225, 4066, 1226, 4071, 4069, 1223]
+import psycopg
+import requests
+from psycopg.types.json import Jsonb
 
-def list_block_timestamps(filter_id: int) -> list[int]:
-    REGION = "DE"
-    RESOLUTION = "hour"
-    # 1. Index-URL bauen (index_{RESOLUTION}.json, OHNE timestamp)
-    index_url = f"https://www.smard.de/app/chart_data/{filter_id}/{REGION}/index_{RESOLUTION}.json"
+from stromdaten import SERIES, block, index, spec
 
-    # 2. holen + raise_for_status
-    response = requests.get(index_url, timeout=30)
-    response.raise_for_status()
 
-    # 3. return response.json()["timestamps"]
-    return response.json()["timestamps"]
-
-def fetch_and_store_block(
-    conn: psycopg.Connection, filter_id: int, block_timestamp: int
-) -> None:
-    """
-    Worker: holt EINEN SMARD-Block und schreibt ihn als EINE Zeile nach raw.smard_data.
-    Bekommt die Verbindung vom Orchestrator, committet pro Block.
-    Wirft bei Fehler nach oben (throw low) — fängt selbst nichts ab.
-    """
-    REGION = "DE"
-    RESOLUTION = "hour"
-
-    # 1. Timeseries-URL bauen.
-    data_url = (
-        f"https://www.smard.de/app/chart_data/{filter_id}/{REGION}/"
-        f"{filter_id}_{REGION}_{RESOLUTION}_{block_timestamp}.json"
-    )
-
-    # 2. Response holen. raise_for_status() wirft bei schlechtem Statuscode.
-    response = requests.get(data_url, timeout=30)
-    response.raise_for_status()
-
-    # 3. JSON parsen (bleibt ein dict — erst beim Insert in Json() wickeln).
-    payload = response.json()
-
-    # 4. Eine Zeile schreiben. transaction() = Commit bei Erfolg,
-    #    Rollback bei Exception → geteilte Verbindung bleibt für den nächsten Block sauber.
-    with conn.transaction():
-        conn.execute(
-        """
-        insert into raw.smard_data
-            (filter_id, region, resolution, block_timestamp, payload, source_url)
-        values (%s, %s, %s, %s, %s, %s)
-        """,
-    (filter_id, REGION, RESOLUTION, block_timestamp, Json(payload), data_url),
-)
-        
-def run_ingestion(num_blocks: int) -> None:
-    with psycopg.connect(CONN_STRING, prepare_threshold=None) as conn:
-        for filter_id in FILTER_IDS:
-            # 1. Index-Call: volle Blockliste für diesen Filter holen.
+def run_ingestion(count):
+    failed = False
+    with psycopg.connect(
+        os.environ["SUPABASE_DB_URL"], autocommit=True, prepare_threshold=None
+    ) as conn:
+        conn.execute("CREATE SCHEMA IF NOT EXISTS raw")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS raw.stromtag_blocks (
+                filter_id integer NOT NULL, region text NOT NULL, resolution text NOT NULL,
+                block_timestamp bigint NOT NULL, payload jsonb NOT NULL, source_url text NOT NULL,
+                fetched_at timestamptz NOT NULL DEFAULT now(),
+                PRIMARY KEY (filter_id, region, resolution, block_timestamp)
+            )
+        """)
+        # Older imports can contain repeated snapshots without a version column.
+        # Keep the old archive intact and prefer the snapshot with most reported values.
+        if conn.execute("SELECT to_regclass('raw.smard_data')").fetchone()[0]:
+            conn.execute("""
+                INSERT INTO raw.stromtag_blocks
+                    (filter_id,region,resolution,block_timestamp,payload,source_url)
+                SELECT DISTINCT ON (filter_id,region,resolution,block_timestamp)
+                    filter_id,region,resolution,block_timestamp,payload::jsonb,source_url
+                  FROM raw.smard_data old
+                 WHERE NOT EXISTS (SELECT 1 FROM raw.stromtag_blocks saved
+                    WHERE (saved.filter_id,saved.region,saved.resolution,saved.block_timestamp)
+                        = (old.filter_id,old.region,old.resolution,old.block_timestamp))
+                 ORDER BY filter_id,region,resolution,block_timestamp,
+                    jsonb_array_length(jsonb_path_query_array(payload::jsonb,'$.series[*][1] ? (@ != null)')) DESC
+                ON CONFLICT DO NOTHING
+            """)
+        for name, fid in SERIES.items():
             try:
-                timestamps = list_block_timestamps(filter_id)
-            except Exception as e:
-                print(f"Fehler im Index-Call: {e} | {filter_id}")
-                continue
+                for stamp in index(fid)[-count:]:
+                    url, data = block(fid, stamp)
+                    conn.execute(
+                        """
+                        INSERT INTO raw.stromtag_blocks
+                            (filter_id, region, resolution, block_timestamp, payload, source_url)
+                        VALUES (%s,%s,%s,%s,%s,%s)
+                        ON CONFLICT (filter_id,region,resolution,block_timestamp)
+                        DO UPDATE SET payload=EXCLUDED.payload, source_url=EXCLUDED.source_url,
+                                      fetched_at=now()
+                    """,
+                        (fid, *spec(fid), stamp, Jsonb(data), url),
+                    )
+                    time.sleep(0.2)
+            except (
+                requests.RequestException,
+                ValueError,
+                KeyError,
+                psycopg.Error,
+            ) as exc:
+                failed = True
+                print(
+                    f"{name}: Import fehlgeschlagen ({type(exc).__name__})",
+                    file=sys.stderr,
+                )
+    return int(failed)
 
-            # 2. Zuschneiden: nur die letzten NUM_BLOCKS aus der Liste.
-            timestamps = timestamps[-num_blocks:]
-
-            # 3. Info-Print: welcher Filter, wie viele Blöcke.
-            print(f"Filter: {filter_id} | Blöcke: {len(timestamps)}")
-
-            # 4. Innere Schleife über die zugeschnittenen Blöcke:
-            for block_timestamp in timestamps:
-                try:
-                    fetch_and_store_block(conn, filter_id, block_timestamp)
-                except Exception as e:
-                    print(f"Fehler im Worker: {e} | {filter_id} | {block_timestamp}")
-                time.sleep(0.2)
 
 if __name__ == "__main__":
-    NUM_BLOCKS =  int(sys.argv[1]) if len(sys.argv) > 1 else 2
-
-    print("Run startet, öffne Verbindung...")
-    # Orchestrator: Verbindung EINMAL öffnen, an jeden Worker-Call übergeben.
-    run_ingestion(NUM_BLOCKS)
-
-
-print(f"Run startet mit {NUM_BLOCKS} Blöcken...") 
-
+    parser = argparse.ArgumentParser()
+    parser.add_argument("num_blocks", nargs="?", type=int, default=2)
+    args = parser.parse_args()
+    if args.num_blocks < 1:
+        parser.error("num_blocks muss positiv sein")
+    sys.exit(run_ingestion(args.num_blocks))
