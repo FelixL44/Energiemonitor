@@ -1,201 +1,378 @@
-import streamlit as st
-import requests
+from datetime import date, timedelta
+from time import monotonic
+
 import pandas as pd
-import plotly.express as px
-from datetime import timedelta
+import plotly.graph_objects as go
+import requests
+import streamlit as st
 
-st.set_page_config(layout="wide", page_title="Energy Monitor")
+from ansichten import (
+    LAND,
+    border_reading,
+    flow_map,
+    frame,
+    hourly_flows,
+    hours,
+    plot_series,
+)
+from stromdaten import (
+    BERLIN,
+    GENERATION,
+    LOAD,
+    PRICE,
+    RENEWABLES,
+    SERIES,
+    border_payload,
+    read_window,
+)
 
-st.title("Energy Monitor ⚡")
+st.set_page_config(
+    page_title="Energiemonitor · Deutschland", page_icon="⚡", layout="wide"
+)
+TODAY = pd.Timestamp.now(tz=BERLIN).date()
 
-@st.cache_data(ttl=3600) # Cache für 1 Stunde, damit wir nicht bei jedem Refresh die API bombardieren
-def fetch_series(filter_id):
-    region = "DE"
-    resolution = "hour"
 
-    # --- Call 1: INDEX ---
-    index_url = f"https://www.smard.de/app/chart_data/{filter_id}/{region}/index_{resolution}.json"
+@st.cache_data(ttl=900, max_entries=64, show_spinner=False)
+def data(start, end, names):
+    return frame(read_window(start, end, [(name, SERIES[name]) for name in names]))
+
+
+@st.cache_data(ttl=900, max_entries=64, show_spinner=False)
+def flows(day):
     try:
-        index_response = requests.get(index_url, timeout=10)
-        index_response.raise_for_status()
-        index_data = index_response.json()
-    except (requests.RequestException, ValueError) as e:
-        st.error(f"Konnte Index-Daten für Filter {filter_id} nicht laden: {e}")
-        st.stop()
-    last_ts = index_data['timestamps'][-4:]  # nur die letzten 4 Wochen-Blöcke -> begrenzt Zeitraum-Slider auf ~4 Wochen
+        return hourly_flows(border_payload(day), day), None
+    except (requests.RequestException, ValueError, KeyError, TypeError):
+        return pd.DataFrame(
+            index=hours(day)
+        ), "Grenzflüsse konnten nicht geladen werden."
 
-    frames = []                                        # leere Sammelliste
-    for ts in last_ts:                         # über jeden Timestamp einzeln
-        data_url = f"https://www.smard.de/app/chart_data/{filter_id}/{region}/{filter_id}_{region}_{resolution}_{ts}.json"
-        try:
-            data_response = requests.get(data_url, timeout=10)
-            data_response.raise_for_status()
-            series_data = data_response.json()
-        except (requests.RequestException, ValueError) as e:
-            st.error(f"Konnte Daten für Filter {filter_id} (Zeitstempel {ts}) nicht laden: {e}")
-            st.stop()
-        df_part = pd.DataFrame(series_data["series"], columns=["timestamp", "value"]).dropna()
-        frames.append(df_part)                         # diesen Wochen-Teil sammeln
 
-    df = pd.concat(frames)                              # alle 4 Wochen untereinander stapeln
-    df["timestamp"] = (
-        pd.to_datetime(df["timestamp"], unit="ms", utc=True)
-          .dt.tz_convert("Europe/Berlin")
+def val(number, unit):
+    if pd.isna(number):
+        return "—"
+    return f"{number:,.2f}".replace(",", " ").replace(".", ",") + " " + unit
+
+
+def strict_sum(df):
+    return df.sum(axis=1, min_count=len(df.columns))
+
+
+def show_warnings(warnings):
+    if warnings:
+        with st.expander("Datenquellen mit Einschränkungen"):
+            for message in dict.fromkeys(warnings):
+                st.write(message)
+
+
+def reset_clock():
+    st.session_state["next-hour-at"] = monotonic() + 2
+
+
+def prices(day, prices, selected):
+    st.subheader("Wann ist Strom an der Börse günstig?")
+    st.caption(
+        "Day-Ahead · Deutschland/Luxemburg · Der Haushaltsstrompreis hängt vom Tarif ab."
     )
-    return df
-
-
-RENEWABLE_SOURCES = {
-    "Solar": 4068,
-    "Wind Onshore": 4067,
-    "Wind Offshore": 1225,
-    "Biomasse": 4066,
-    "Wasserkraft": 1226,
-    # "Sonstige Erneuerbare": 1228,   # erstmal weglassen, kümmern wir uns später drum
-}
-FOSSIL_SOURCES = {
-    "Erdgas": 4071,
-    "Steinkohle": 4069,
-    "Braunkohle": 1223,
-}
-COLORS = {
-    "Solar (MW)": "#f9d71c",        # gelb (Sonne)
-    "Wind Onshore (MW)": "#1f77b4", # blau
-    "Wind Offshore (MW)": "#17becf",# türkis
-    "Biomasse (MW)": "#2ca02c",     # grün
-    "Wasserkraft (MW)": "#1fa8a8",  # blaugrün
-    "Erdgas (MW)": "#ff7f0e",       # orange
-    "Steinkohle (MW)": "#7f7f7f",   # grau
-    "Braunkohle (MW)": "#8c564b",   # braun
-}
-COLORS_PCT = {key.replace(" (MW)", " (%)"): value for key, value in COLORS.items()}
-
-ALL_SOURCES = {**RENEWABLE_SOURCES, **FOSSIL_SOURCES}
-
-GRANULARITY = {
-    "Stunde": "h",
-    "Tag": "D",
-    "Woche": "W",
-}
-
-def renewable_share(renewable_total, fossil_total):
-    total = renewable_total + fossil_total
-    if total == 0:
-        return 0
-    return renewable_total / total
-
-merged = None
-for name, source_id in ALL_SOURCES.items():
-    df = fetch_series(source_id)
-    df = df.rename(columns={"value": f"{name} (MW)"})
-    if merged is None:
-        merged = df
+    idx = hours(day)
+    quarters = pd.date_range(
+        idx[0], idx[-1] + pd.Timedelta(hours=1), freq="15min", inclusive="left"
+    )
+    s = prices.reindex(quarters)
+    if s.isna().all():
+        st.info("Für diesen Tag liegen keine Viertelstundenpreise vor.")
+        return
+    duration = st.radio(
+        "Dauer",
+        [1, 2, 3, 4],
+        index=1,
+        horizontal=True,
+        format_func=lambda n: f"{n} h",
+        on_change=reset_clock,
+    )
+    eligible = s.loc[s.index >= pd.Timestamp.now(tz=BERLIN)] if day == TODAY else s
+    costs = eligible.rolling(4 * duration, min_periods=4 * duration).mean().dropna()
+    fig = plot_series({PRICE: s}, "€/MWh", selected)
+    fig.update_traces(line_shape="hv")
+    if not costs.empty:
+        end = costs.idxmin() + pd.Timedelta(minutes=15)
+        start = end - pd.Timedelta(hours=duration)
+        fig.add_vrect(
+            x0=start.timestamp(),
+            x1=end.timestamp(),
+            fillcolor="#66d4ae",
+            opacity=0.17,
+            line_width=0,
+        )
+        st.write(
+            f"Günstigstes {'verbleibendes ' if day == TODAY else ''}Fenster: "
+            f"**{start:%H:%M %Z} bis {end:%H:%M %Z}** · Ø {val(costs.min(), '€/MWh')}"
+        )
     else:
-        merged = pd.merge(merged, df, on="timestamp")
+        st.caption("Für diese Dauer gibt es kein vollständiges Preisfenster mehr.")
+    st.plotly_chart(fig, use_container_width=True)
 
-verbrauch = fetch_series(410)
 
-merged = merged.set_index("timestamp")
-verbrauch = verbrauch.set_index("timestamp")
-
-last_update = merged.index[-1]
-
-min_date = merged.index.min().date()
-max_date = merged.index.max().date()
-default_start = max(max_date - timedelta(days=7), min_date)
-
-with st.sidebar:
-    st.header("Filter")
-    choice = st.radio("Granularität", list(GRANULARITY.keys()))
-    date_range = st.date_input(
-        "Zeitraum",
-        value=(default_start, max_date),
-        min_value=min_date,
-        max_value=max_date,
+def day_view():
+    st.title("Der deutsche Stromtag")
+    st.caption(
+        "Erzeugung, Verbrauch und Stromflüsse im Tagesverlauf · Zeit in Deutschland"
     )
-    ansicht = st.radio("Ansicht", ["Prozent", "Absolut"])
+    earliest = TODAY - timedelta(days=365 * 2)
+    try:
+        linked = date.fromisoformat(st.query_params.get("tag", ""))
+    except ValueError:
+        linked = TODAY
+    day = st.date_input(
+        "Stromtag",
+        min(TODAY, max(earliest, linked)),
+        min_value=earliest,
+        max_value=TODAY,
+        key="selected-day",
+    )
+    if day is None:
+        st.info("Bitte einen Stromtag wählen.")
+        return
+    if st.query_params.get("tag") != day.isoformat():
+        st.query_params["tag"] = day.isoformat()
+    with st.spinner("Stromdaten werden geladen …"):
+        raw, issues = data(day, day, tuple(SERIES))
+        borders, problem = flows(day)
+    ticks = hours(day)
+    actual = raw.reindex(ticks).drop(columns=PRICE) / 1000  # MWh per full hour → GW
+    s = pd.DataFrame(index=ticks)
+    s[LOAD] = actual[LOAD]
+    s["Solar"] = actual["Solar"]
+    s["Wind"] = actual["Wind an Land"] + actual["Wind auf See"]
+    s["Residuallast"] = s[LOAD] - s["Solar"] - s["Wind"]
+    for name, forecasts in {
+        LOAD: ["Netzlast · Prognose"],
+        "Solar": ["Solar · Prognose"],
+        "Wind": ["Wind an Land · Prognose", "Wind auf See · Prognose"],
+    }.items():
+        last = s[name].last_valid_index()
+        pred = strict_sum(actual[forecasts])
+        s[name + " · Prognose"] = (
+            pred.where(pred.index > last) if last is not None else pred
+        )
+    balance = borders.get("Saldo", pd.Series(index=ticks, dtype=float))
+    common = pd.concat(
+        [s[[LOAD, "Solar", "Wind"]], strict_sum(actual[list(GENERATION)]), balance],
+        axis=1,
+    )
+    fresh = common.dropna().index
+    complete = len(fresh) > 0
+    if not complete:
+        fresh = s[[LOAD, "Solar", "Wind"]].dropna().index
+    initial = ticks.get_loc(fresh[-1]) if len(fresh) else 0
+    if len(fresh):
+        scope = (
+            "Erzeugung, Netzlast und Grenzsaldo"
+            if complete
+            else "Netzlast, Wind und Solar"
+        )
+        st.caption(
+            f"Letzte gemeinsame Messstunde für {scope}: {fresh[-1]:%d.%m.%Y, %H:%M %Z}."
+        )
+    else:
+        st.warning(
+            "Für diesen Tag gibt es noch keine gemeinsame Messstunde für Netzlast, Wind und Solar."
+        )
+    warnings = issues + ([problem] if problem else [])
+    show_warnings(warnings)
+    if warnings:
 
-freq = GRANULARITY[choice]
+        def retry():
+            data.clear(day, day, tuple(SERIES))
+            flows.clear(day)
 
-if isinstance(date_range, tuple) and len(date_range) == 2:
-    start = pd.Timestamp(date_range[0]).tz_localize("Europe/Berlin")
-    end = pd.Timestamp(date_range[1]).tz_localize("Europe/Berlin")
-    mask = (merged.index >= start) & (merged.index <= end)
-    merged = merged[mask]
-    verbrauch = verbrauch.loc[start:end]
+        st.button("Daten erneut laden", on_click=retry)
+    if raw.dropna(how="all").empty and borders.dropna(how="all").empty:
+        st.info("Für den gewählten Tag sind keine Daten verfügbar.")
+        return
+    play = st.toggle("Tag abspielen", key=f"play-{day}", on_change=reset_clock)
 
-merged_resampled = merged.resample(freq).sum()
-merged_pct = merged_resampled.div(merged_resampled.sum(axis=1), axis=0) * 100
-merged_pct.columns = [col.replace(" (MW)", " (%)") for col in merged_pct.columns]
+    @st.fragment(run_every=2 if play else None)
+    def timeline():
+        key = f"hour-{day}"
+        if key not in st.session_state:
+            st.session_state[key] = initial
+        if play and monotonic() >= st.session_state.get("next-hour-at", 0):
+            reset_clock()
+            st.session_state[key] = (st.session_state[key] + 1) % len(ticks)
+        pos = st.select_slider(
+            "Messstunde",
+            options=list(range(len(ticks))),
+            format_func=lambda i: ticks[i].strftime("%H:%M %Z"),
+            key=key,
+            on_change=reset_clock,
+        )
+        t = ticks[pos]
+        m = s.loc[t]
+        other = strict_sum(
+            actual[
+                [
+                    n
+                    for n in GENERATION
+                    if n not in ("Wind an Land", "Wind auf See", "Solar")
+                ]
+            ]
+        ).loc[t]
+        border = borders.loc[t]
+        columns = st.columns(4)
+        for column, (label, value) in zip(
+            columns,
+            [
+                ("Netzlast", m[LOAD]),
+                ("Wind und Solar", m["Wind"] + m["Solar"]),
+                ("Übrige Erzeugung", other),
+                ("Nettoimport (+) / Export (−)", border.get("Saldo")),
+            ],
+        ):
+            column.metric(label, val(value, "GW"))
+        st.caption(
+            f"Mittlere Leistung ab {t:%H:%M %Z} für eine Stunde · — Daten fehlen"
+        )
+        chart_col, map_col = st.columns([1.15, 1])
+        with chart_col:
+            st.subheader("Last und Erzeugung")
+            st.caption(
+                "Gestrichelt: Prognose ab dem letzten Messwert der jeweiligen Reihe."
+            )
+            st.plotly_chart(
+                plot_series(s.to_dict("series"), "GW", t),
+                use_container_width=True,
+                key="day-lines",
+            )
+        with map_col:
+            st.subheader("Strom über die Grenzen")
+            st.caption("Grün: Import · Gelb: Export · Pfeilbreite: mittlere Leistung")
+            event = st.plotly_chart(
+                flow_map(border),
+                use_container_width=True,
+                key="border-map",
+                on_select=reset_clock,
+                selection_mode="points",
+                config={"displayModeBar": False},
+            )
+        labels = {code: name for name, code, _, _ in LAND.values()}
+        points = event.selection.points
+        selected = next(
+            (p["customdata"][0] for p in reversed(points) if p.get("customdata")), None
+        )
+        available = [c for c in borders if c != "Saldo"]
+        if available:
+            if selected in available and selected != st.session_state.get(
+                "last_map_pick"
+            ):
+                st.session_state["border-choice"] = selected
+            st.session_state["last_map_pick"] = selected
+            country = st.selectbox(
+                "Grenzverbindung im Tagesverlauf",
+                available,
+                format_func=lambda c: labels.get(c, c),
+                key="border-choice",
+                on_change=reset_clock,
+            )
+            route, reading, interval = border_reading(
+                labels.get(country, country), border.get(country), t
+            )
+            st.caption(f"{route} · {reading} · {interval}")
+            st.plotly_chart(
+                plot_series({labels.get(country, country): borders[country]}, "GW", t),
+                use_container_width=True,
+                key="border-history",
+            )
+        else:
+            st.caption("Keine gemessenen Grenzflüsse für diesen Tag verfügbar.")
 
-renewable_cols = [f"{name} (MW)" for name in RENEWABLE_SOURCES]
-fossil_cols = [f"{name} (MW)" for name in FOSSIL_SOURCES]
+        prices(day, raw[PRICE], t)
 
-renewable_total = merged[renewable_cols].sum().sum()
-fossil_total = merged[fossil_cols].sum().sum()
-gesamt = renewable_total + fossil_total
+    timeline()
 
-solar_anteil = merged["Solar (MW)"].sum() / gesamt if gesamt else 0
-wind_anteil = (
-    merged["Wind Onshore (MW)"].sum() + merged["Wind Offshore (MW)"].sum()
-) / gesamt if gesamt else 0
 
-renewable_pro_stunde = merged[renewable_cols].sum(axis=1)
-renewable_pro_stunde, verbrauch_pro_stunde = renewable_pro_stunde.align(
-    verbrauch["value"], join="inner"
+def history():
+    st.title("Erzeugung im Zeitverlauf")
+    dates = st.date_input(
+        "Zeitraum",
+        (TODAY - timedelta(days=7), TODAY),
+        max_value=TODAY,
+        min_value=TODAY - timedelta(days=365 * 2),
+    )
+    if not dates or len(dates) != 2:
+        st.info("Bitte ein Enddatum wählen.")
+        return
+    if (dates[1] - dates[0]).days >= 35:
+        st.info("Bitte höchstens 35 Tage gleichzeitig auswählen.")
+        return
+    raw, warnings = data(*dates, tuple(GENERATION) + (LOAD,))
+    show_warnings(warnings)
+    idx = pd.date_range(hours(dates[0])[0], hours(dates[1])[-1], freq="h")
+    gen = raw.reindex(idx)[list(GENERATION)] / 1000
+    load = raw[LOAD].reindex(idx) / 1000
+    total, renew = strict_sum(gen), strict_sum(gen[RENEWABLES])
+    complete = total.notna() & load.notna() & load.gt(0)
+    if not complete.any():
+        st.info("Keine vollständigen Stunden für die Übersicht.")
+    else:
+        denom = total[complete].sum()
+
+        def share(values):
+            return val(100 * values[complete].sum() / denom if denom else None, "%")
+
+        for widget, (name, value) in zip(
+            st.columns(5),
+            [
+                ("Erneuerbare / Erzeugung", share(renew)),
+                ("Solar / Erzeugung", share(gen["Solar"])),
+                ("Wind / Erzeugung", share(gen["Wind an Land"] + gen["Wind auf See"])),
+                (
+                    "Erneuerbare / Netzlast",
+                    val(100 * renew[complete].sum() / load[complete].sum(), "%"),
+                ),
+                (
+                    "Stunden über Netzlast",
+                    val(100 * (renew[complete] > load[complete]).mean(), "%"),
+                ),
+            ],
+        ):
+            widget.metric(name, value)
+    st.caption(
+        f"Kennzahlen aus {complete.sum()} von {len(idx)} Stunden mit vollständigen Daten."
+    )
+    unit_col, period_col = st.columns(2)
+    mode = unit_col.radio("Darstellung", ["Energie", "Anteil"], horizontal=True)
+    period = period_col.radio("Auflösung", ["Stunde", "Tag", "Woche"], horizontal=True)
+    rule = {"Stunde": "h", "Tag": "D", "Woche": "W-SUN"}[period]
+    agg = gen.resample(rule).sum(min_count=1)
+    agg = agg.where(gen.resample(rule).count().eq(gen.resample(rule).size(), axis=0))
+    if mode == "Anteil":
+        agg = agg.div(strict_sum(agg).replace(0, float("nan")), axis=0) * 100
+    unit = "%" if mode == "Anteil" else "GWh"
+    st.plotly_chart(plot_series(agg.to_dict("series"), unit), use_container_width=True)
+    # Stack complete intervals only. Plotly otherwise interpolates missing layers.
+    grouped = agg.dropna()
+    if not grouped.empty:
+        fig = go.Figure(
+            [go.Bar(x=grouped.index, y=grouped[n], name=n) for n in grouped]
+        )
+        fig.update_layout(
+            barmode="stack", yaxis_title=unit, legend={"orientation": "h"}
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+
+view = st.radio(
+    "Ansicht",
+    ["Stromtag", "Historische Auswertung"],
+    horizontal=True,
+    label_visibility="collapsed",
 )
-ueberschuss_anteil = (renewable_pro_stunde > verbrauch_pro_stunde).mean()
-
-verbrauch_total = verbrauch["value"].sum()
-deckungsgrad = min(renewable_total / verbrauch_total, 1.0) if verbrauch_total else 0
-share = renewable_share(renewable_total, fossil_total)
-
-st.caption(f"Datenstand: {last_update.strftime('%d.%m.%Y %H:%M')} Uhr")
-
-col1, col2, col3, col4 = st.columns(4)
-with col1:
-    st.metric("Deckungsgrad", f"{deckungsgrad * 100:.1f} %")
-with col2:
-    st.metric("Anteil Erneuerbare", f"{share * 100:.1f} %")
-with col3:
-    st.metric("Solar-Anteil", f"{solar_anteil * 100:.1f} %")
-with col4:
-    st.metric("Wind-Anteil", f"{wind_anteil * 100:.1f} %")
-
-col5, = st.columns(1)
-with col5:
-    st.metric("Überschuss-Stunden", f"{ueberschuss_anteil * 100:.1f} %")
-
-
-
-fig = px.line(
-    merged_resampled,
-    color_discrete_map=COLORS,
-    labels={"timestamp": "Zeit", "value": "Erzeugung (MWh)", "variable": "Energiequelle"},
-    title="Stromerzeugung nach Quelle",
-)
-fig.update_traces(hovertemplate="<b>%{fullData.name}</b>: %{y:.1f} MW<br>%{x|%d.%m.%Y %H:%M}<extra></extra>")
-st.plotly_chart(fig)
-
-
-if ansicht == "Prozent":
-    data = merged_pct
-    farben = COLORS_PCT
-    y_label = "Anteil (%)"
-    einheit = "%"
-    titel = "Anteil am Strommix"
+if view == "Stromtag":
+    day_view()
 else:
-    data = merged_resampled
-    farben = COLORS
-    y_label = "Erzeugung (MWh)"
-    einheit = "MWh"
-    titel = "Stromerzeugung (gestapelt)"
-
-fig = px.area(
-    data,
-    color_discrete_map=farben,
-    labels={"timestamp": "Zeit", "value": y_label, "variable": "Energiequelle"},
-    title=titel,
+    history()
+st.caption(
+    "Daten: Bundesnetzagentur | [SMARD.de](https://www.smard.de/home/datennutzung) · "
+    "Grenzflüsse: [Energy-Charts.info](https://api.energy-charts.info/) · "
+    "[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) · Kartengrundlage: Natural Earth."
 )
-fig.update_traces(hovertemplate=f"<b>%{{fullData.name}}</b>: %{{y:.1f}} {einheit}<br>%{{x|%d.%m.%Y %H:%M}}<extra></extra>")
-st.plotly_chart(fig)

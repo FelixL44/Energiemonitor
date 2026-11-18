@@ -2,14 +2,18 @@ name: SMARD Ingestion
 
 on:
   schedule:
-    # resync schedule 2026
-    - cron: "17 6 * * *"
+    # SMARD Ist-Werte werden stündlich aktualisiert.
+    - cron: "17 * * * *"
   workflow_dispatch:
     inputs:
       num_blocks:
         description: "Wie viele Wochen-Blöcke pro Filter"
         required: false
         default: "2"
+
+concurrency:
+  group: smard-ingest
+  cancel-in-progress: false
 
 jobs:
   ingest:
@@ -29,4 +33,5 @@ jobs:
       - name: Ingestion ausführen
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-        run: python ingest.py ${{ github.event.inputs.num_blocks || 2 }}
+          NUM_BLOCKS: ${{ github.event.inputs.num_blocks || 2 }}
+        run: python ingest.py "$NUM_BLOCKS"
