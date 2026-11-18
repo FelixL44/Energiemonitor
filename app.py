@@ -245,7 +245,7 @@ def day_view():
             )
         with map_col:
             st.subheader("Strom über die Grenzen")
-            st.caption("Pfeilrichtung: Stromfluss · Pfeilbreite: mittlere Leistung")
+            st.caption("Grün: Import · Gelb: Export · Pfeilbreite: mittlere Leistung")
             event = st.plotly_chart(
                 flow_map(border),
                 use_container_width=True,

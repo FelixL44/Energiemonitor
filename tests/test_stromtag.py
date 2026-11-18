@@ -107,7 +107,8 @@ class StromtagTest(unittest.TestCase):
         strong, weak = arrows["Frankreich"], arrows["Niederlande"]
         shafts = [a for a in fig.layout.annotations if a.showarrow]
         self.assertEqual(len(shafts), 2)
-        self.assertEqual(shafts[0].arrowcolor, shafts[1].arrowcolor)
+        self.assertEqual(shafts[0].arrowcolor, "#64deba")
+        self.assertEqual(shafts[1].arrowcolor, "#ffc368")
         self.assertGreater(shafts[0].arrowwidth, shafts[1].arrowwidth)
         self.assertEqual(shafts[1].arrowwidth, arrow_width(0.4))
         for shaft, hit_area in zip(shafts, (strong, weak)):

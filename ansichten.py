@@ -207,7 +207,7 @@ def flow_map(row):
             arrowhead=2,
             arrowsize=(5 + width) / (3 * width),
             arrowwidth=width,
-            arrowcolor=FLOW_INK,
+            arrowcolor="#64deba" if value > 0 else "#ffc368",
             captureevents=False,
         )
         fig.add_scatter(
